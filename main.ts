@@ -1,134 +1,180 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { Plugin, MarkdownPostProcessorContext } from 'obsidian';
+import { RangeSetBuilder } from '@codemirror/state';
+import {
+	Decoration,
+	DecorationSet,
+	EditorView,
+	ViewPlugin,
+	ViewUpdate,
+	WidgetType,
+} from '@codemirror/view'
+import '@github/relative-time-element'; // Import to register the custom element
 
-// Remember to rename these classes and interfaces!
+// Regex for MarkdownPostProcessor (checks if an entire <code> block is a timestamp)
+// Group 1: The numeric timestamp
+const readingViewTimestampRegex = /^<t:(\d+)(?::[tTdDfFR])?>$/;
 
-interface MyPluginSettings {
-	mySetting: string;
+// Regex for CodeMirror 6 ViewPlugin (targets the *entire* inline code block `timestamp`)
+// Group 1: The full <t:...> part (e.g., <t:12345:R>)
+// Group 2: The numeric UNIX timestamp (e.g., 12345)
+const editorTimestampRegex = /`(<t:(\d+)(?::[tTdDfFR])?>)`/g;
+
+
+// --- CodeMirror 6 Widget ---
+class TimestampWidget extends WidgetType {
+	constructor(readonly _fullTimestampString: string, readonly unixTimestamp: number) {
+		// _fullTimestampString is the <t:123:R> part, not used in toDOM but good for eq or debugging
+		super();
+	}
+
+	toDOM(view: EditorView): HTMLElement {
+		const span = document.createElement('span');
+		// This class helps to target the widget specifically in CSS if needed
+		// and distinguishes it from the raw <relative-time> if it were used directly.
+		span.classList.add('discord-relative-time-widget-wrapper');
+
+		const relativeTimeEl = document.createElement('relative-time');
+		const date = new Date(this.unixTimestamp * 1000);
+		relativeTimeEl.setAttribute('datetime', date.toISOString());
+		relativeTimeEl.classList.add('discord-relative-time'); // Common class for styling
+
+		const titleFormat: Intl.DateTimeFormatOptions = {
+			weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+			hour: 'numeric', minute: 'numeric',
+		};
+		try {
+			relativeTimeEl.setAttribute('title', date.toLocaleString(undefined, titleFormat));
+		} catch (e) {
+			// Fallback for environments where toLocaleString with options might fail
+			relativeTimeEl.setAttribute('title', date.toString());
+		}
+
+		span.appendChild(relativeTimeEl);
+		return span;
+	}
+
+	// eq(other: TimestampWidget): boolean {
+	//   return other.unixTimestamp === this.unixTimestamp && other._fullTimestampString === this._fullTimestampString;
+	// }
+
+	// ignoreEvent(): boolean { // Make the widget non-interactive with mouse/keyboard
+	//   return true;
+	// }
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+// --- CodeMirror 6 ViewPlugin Logic ---
+function buildTimestampDecorations(view: EditorView): DecorationSet {
+	const builder = new RangeSetBuilder<Decoration>();
+
+	for (const { from, to } of view.visibleRanges) {
+		const text = view.state.doc.sliceString(from, to);
+		let match;
+		editorTimestampRegex.lastIndex = 0; // Reset global regex state
+
+		while ((match = editorTimestampRegex.exec(text)) !== null) {
+			const matchStartInSlice = match.index;
+			const fullMatchedText = match[0]; // The whole ``<t:...>``
+			const innerTimestampTag = match[1]; // The `<t:...>` part
+			const unixTimestampStr = match[2];  // The numeric timestamp
+
+			const startPos = from + matchStartInSlice;
+			const endPos = startPos + fullMatchedText.length;
+
+			const unixTimestamp = parseInt(unixTimestampStr, 10);
+			if (!isNaN(unixTimestamp)) {
+				builder.add(
+					startPos,
+					endPos,
+					Decoration.replace({
+						widget: new TimestampWidget(innerTimestampTag, unixTimestamp),
+					})
+				);
+			}
+		}
+	}
+	return builder.finish();
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+const timestampEditorPlugin = ViewPlugin.fromClass(
+	class {
+		decorations: DecorationSet;
+
+		constructor(view: EditorView) {
+			this.decorations = buildTimestampDecorations(view);
+		}
+
+		update(update: ViewUpdate) {
+			// Recompute decorations if document, viewport, or selection changes
+			// More specific checks (e.g. only update.docChanged) can be used for performance if needed
+			if (update.docChanged || update.viewportChanged || update.selectionSet) {
+				this.decorations = buildTimestampDecorations(update.view);
+			}
+		}
+	},
+	{
+		decorations: v => v.decorations,
+	}
+);
+
+
+export default class DiscordRelativeTimePlugin extends Plugin {
 
 	async onload() {
-		await this.loadSettings();
+		console.log('Loading Discord Relative Time Plugin (Editor + Reading View)');
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		// For Reading View: Process <code> elements
+		this.registerMarkdownPostProcessor((element: HTMLElement, context: MarkdownPostProcessorContext) => {
+			this.processTimestampsInReadingView(element, context);
 		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
+		// For Editing View (Source Mode and Live Preview)
+		this.registerEditorExtension(timestampEditorPlugin);
+	}
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+	processTimestampsInReadingView(element: HTMLElement, context: MarkdownPostProcessorContext) {
+		const codeElements = element.querySelectorAll('code');
+
+		codeElements.forEach(codeElement => {
+			const textContent = codeElement.textContent; // Get the raw text content of the <code> tag
+			if (!textContent) return;
+
+			// Check if the *entire* content of the <code> tag matches our timestamp pattern
+			const match = textContent.match(readingViewTimestampRegex);
+
+			if (match) {
+				// match[0] is the full matched string e.g. <t:1678886400:R>
+				// match[1] is the captured UNIX timestamp string
+				const timestampSecondsStr = match[1];
+				const unixTimestampSeconds = parseInt(timestampSecondsStr, 10);
+
+				if (!isNaN(unixTimestampSeconds)) {
+					const date = new Date(unixTimestampSeconds * 1000); // Convert to milliseconds
+
+					const relativeTimeEl = document.createElement('relative-time');
+					relativeTimeEl.setAttribute('datetime', date.toISOString());
+					relativeTimeEl.classList.add('discord-relative-time'); // For styling
+
+					const titleFormat: Intl.DateTimeFormatOptions = {
+						weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+						hour: 'numeric', minute: 'numeric',
+					};
+					try {
+						relativeTimeEl.setAttribute('title', date.toLocaleString(undefined, titleFormat));
+					} catch (e) {
+						relativeTimeEl.setAttribute('title', date.toString());
 					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+					// Replace the content of the <code> element with the new <relative-time>
+					codeElement.innerHTML = ''; // Clear existing text node
+					codeElement.appendChild(relativeTimeEl);
 				}
 			}
+			// If no match, or timestamp is invalid, the <code> element remains unchanged.
 		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 	}
 
 	onunload() {
-
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
+		console.log('Unloading Discord Relative Time Plugin');
+		// Editor extensions and post processors are automatically cleaned up by Obsidian
 	}
 }
