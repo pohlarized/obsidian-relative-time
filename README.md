@@ -23,6 +23,6 @@ All [RFC3339](https://www.rfc-editor.org/rfc/rfc3339) compliant ["full-date"](ht
 
 ## Acknowledgements
 
-This plugin is forked from the [Obsidian Sample Plugin].
+This plugin is generated from the [Obsidian Sample Plugin](https://github.com/obsidianmd/obsidian-sample-plugin).
 It leverages [`@github/relative-time-element`](https://www.npmjs.com/package/@github/relative-time-element) for formatting datetimes.
 The plugin was mostly vibe-coded with some minor manual fixes using google gemini 2.5 pro preview.
