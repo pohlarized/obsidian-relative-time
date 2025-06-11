@@ -1,8 +1,38 @@
-/*
+/* styles.css */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* Ensure the relative-time element itself is inline and basic */
+relative-time {
+  display: inline;
+  /* Reset any potential inherited styles that might conflict */
+  background-color: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: 1em; /* Relative to its parent */
+  line-height: inherit;
+}
 
-If your plugin does not need CSS, delete this file.
+/* This class will be applied to the wrapper in editor mode (widget)
+   and to the <code> element in reading mode. */
+.rfc3339-relative-time-styled-codeblock {
+  display: inline-block; /* Or inline, depending on desired interaction with surrounding text */
+  font-family: var(--font-monospace);
+  background-color: var(--background-secondary-alt); /* Obsidian's code background */
+  padding: 1px 5px; /* Adjust for typical code block padding */
+  border-radius: var(--radius-s); /* Obsidian's small radius */
+  font-size: 0.9em; /* Inline code is often slightly smaller */
+  color: var(--text-normal); /* Standard text color */
+  vertical-align: baseline; /* Helps with line height alignment */
+  line-height: var(--line-height-normal); /* Ensure consistent line height */
+}
 
-*/
+/* Ensure the <relative-time> inside our styled block inherits correctly */
+.rfc3339-relative-time-styled-codeblock relative-time {
+  font-family: inherit; /* Crucial for monospace */
+  color: inherit;
+}
+
+/* The original widget wrapper, can be minimal now */
+.rfc3339-relative-time-widget-wrapper {
+  display: inline-block; /* Still useful for CM widget structure */
+  vertical-align: baseline;
+}
