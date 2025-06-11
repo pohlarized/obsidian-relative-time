@@ -17,20 +17,22 @@ const editorRegex = new RegExp('`(' + rfcDatePart + ')(' + rfcTimeAndZonePart + 
 
 // --- Helper function for formatting the "datetime" part ---
 function formatAbsoluteDateTime(date: Date, isDateOnly: boolean): string {
-	const options: Intl.DateTimeFormatOptions = {
-		year: 'numeric', month: 'short', day: 'numeric',
-		hour: 'numeric', minute: '2-digit', hour12: false,
-	};
 	if (isDateOnly) {
+		const options: Intl.DateTimeFormatOptions = {
+			year: 'numeric',
+			month: 'short',
+			day: 'numeric',
+		};
 		return date.toLocaleDateString(undefined, options);
-		// For date-only, YYYY-MM-DD is clear and standard
-		const year = date.getUTCFullYear();
-		const month = (date.getUTCMonth() + 1).toString().padStart(2, '0');
-		const day = date.getUTCDate().toString().padStart(2, '0');
-		return `${year}-${month}-${day}`;
 	} else {
-		// For date-time, use local time for display, e.g., "Oct 26, 2023, 2:30 PM"
-		// Or a more compact local format:
+		const options: Intl.DateTimeFormatOptions = {
+			year: 'numeric',
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit',
+			hour12: false,
+		};
 		return date.toLocaleString(undefined, options);
 	}
 }
