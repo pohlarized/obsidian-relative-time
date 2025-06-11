@@ -10,56 +10,66 @@ import {
 import { RangeSetBuilder, EditorSelection } from '@codemirror/state'; // Added EditorSelection for typing clarity
 import '@github/relative-time-element';
 
-// RFC 3339 like pattern. This is a simplified version for common cases.
-// It captures: YYYY-MM-DDTHH:mm:ss(.sss optional)(Z or +/-HH:mm timezone)
-const rfc3339PatternSrc = '\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})';
 
-// Regex for MarkdownPostProcessor (checks if an entire <code> block is an RFC 3339 string)
-// Group 1: The RFC 3339 datetime string
-const readingViewRfc3339Regex = new RegExp(`^(${rfc3339PatternSrc})$`);
+// Regex pattern components:
+// Date part: YYYY-MM-DD
+const rfcDatePart = '\\d{4}-\\d{2}-\\d{2}';
+// Time part (optional seconds, optional fractional seconds) and Timezone (Z or +/-HH:MM)
+const rfcTimeAndZonePart = 'T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:\\d{2})';
 
-// Regex for CodeMirror 6 ViewPlugin (targets an RFC 3339 string within backticks)
-// Group 1: The RFC 3339 datetime string (inside the backticks)
-const editorRfc3339Regex = new RegExp('`(' + rfc3339PatternSrc + ')`', 'g');
+// Regex for MarkdownPostProcessor:
+// Captures date (group 1) and optionally time+zone (group 2)
+const readingViewRegex = new RegExp(`^(${rfcDatePart})(${rfcTimeAndZonePart})?$`);
+
+// Regex for CodeMirror 6 ViewPlugin:
+// Captures date (group 1) and optionally time+zone (group 2) within backticks
+// The full content inside backticks will be `match[1] + (match[2] || '')`
+const editorRegex = new RegExp('`(' + rfcDatePart + ')(' + rfcTimeAndZonePart + ')?`', 'g');
 
 
 // --- CodeMirror 6 Widget ---
-class RFC3339TimestampWidget extends WidgetType {
-	constructor(readonly rfc3339String: string) {
+class RFC3339Widget extends WidgetType {
+	constructor(readonly matchedDateString: string, readonly isDateOnly: boolean) {
 		super();
 	}
 
 	toDOM(view: EditorView): HTMLElement {
-		// Outer wrapper for CodeMirror, gets general widget class
 		const wrapperSpan = document.createElement('span');
-		wrapperSpan.classList.add('rfc3339-relative-time-widget-wrapper');
+		wrapperSpan.classList.add('rfc3339-relative-time-widget-wrapper'); // Keep consistent with CSS
 
-		// Inner span gets the code block styling
 		const styledSpan = document.createElement('span');
-		styledSpan.classList.add('rfc3339-relative-time-styled-codeblock');
+		styledSpan.classList.add('rfc3339-relative-time-styled-codeblock'); // Keep consistent with CSS
 
-		const date = new Date(this.rfc3339String);
-		if (isNaN(date.getTime())) { // Check for invalid date
-			// If date is invalid, render the original string as plain text within styled span
-			styledSpan.textContent = this.rfc3339String;
+		let processedDateString = this.matchedDateString;
+		if (this.isDateOnly) {
+			processedDateString += 'T00:00:00Z'; // Normalize date-only to UTC midnight
+		}
+
+		const date = new Date(processedDateString);
+		if (isNaN(date.getTime())) {
+			styledSpan.textContent = this.matchedDateString; // Show original if invalid
 			wrapperSpan.appendChild(styledSpan);
 			return wrapperSpan;
 		}
 
 		const relativeTimeEl = document.createElement('relative-time');
 		relativeTimeEl.setAttribute('datetime', date.toISOString());
-		// No specific class needed on relative-time itself beyond what @github/relative-time-element provides
-		// as styling is handled by its parent .rfc3339-relative-time-styled-codeblock
 
-		const titleFormat: Intl.DateTimeFormatOptions = {
-			weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-			hour: 'numeric', minute: 'numeric', timeZoneName: 'short',
-		};
-		try {
-			relativeTimeEl.setAttribute('title', date.toLocaleString(undefined, titleFormat));
-		} catch (e) {
-			relativeTimeEl.setAttribute('title', date.toString());
+		let titleString: string;
+		if (this.isDateOnly) {
+			const titleFormat: Intl.DateTimeFormatOptions = {
+				weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+				timeZone: 'UTC', // Display the date as it is (e.g., October 27, 2023)
+			};
+			titleString = date.toLocaleDateString(undefined, titleFormat);
+		} else {
+			const titleFormat: Intl.DateTimeFormatOptions = {
+				weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+				hour: 'numeric', minute: 'numeric', timeZoneName: 'short',
+			};
+			titleString = date.toLocaleString(undefined, titleFormat);
 		}
+		relativeTimeEl.setAttribute('title', titleString);
 
 		styledSpan.appendChild(relativeTimeEl);
 		wrapperSpan.appendChild(styledSpan);
@@ -68,22 +78,25 @@ class RFC3339TimestampWidget extends WidgetType {
 }
 
 // --- CodeMirror 6 ViewPlugin Logic ---
-function buildRFC3339TimestampDecorations(view: EditorView): DecorationSet {
+function buildDecorations(view: EditorView): DecorationSet {
 	const builder = new RangeSetBuilder<Decoration>();
 	const selection: EditorSelection = view.state.selection;
 
 	for (const { from, to } of view.visibleRanges) {
 		const text = view.state.doc.sliceString(from, to);
 		let match;
-		editorRfc3339Regex.lastIndex = 0; // Reset global regex state
+		editorRegex.lastIndex = 0; // Reset global regex state
 
-		while ((match = editorRfc3339Regex.exec(text)) !== null) {
-			const matchStartInSlice = match.index;
-			const fullMatchedText = match[0]; // The whole `RFC3339_STRING`
-			const rfc3339String = match[1];  // The captured RFC 3339 string
+		while ((match = editorRegex.exec(text)) !== null) {
+			const fullMarkdownMatch = match[0]; // The whole `DATE_OR_DATETIME`
+			const datePart = match[1];         // YYYY-MM-DD
+			const timePart = match[2];         // Optional T...Z part
 
-			const startPos = from + matchStartInSlice;
-			const endPos = startPos + fullMatchedText.length;
+			const fullDateTimeStringInsideBackticks = datePart + (timePart || '');
+			const isDateOnly = !timePart;
+
+			const startPos = from + match.index;
+			const endPos = startPos + fullMarkdownMatch.length;
 
 			let cursorIsInside = false;
 			for (const selRange of selection.ranges) {
@@ -97,14 +110,19 @@ function buildRFC3339TimestampDecorations(view: EditorView): DecorationSet {
 				continue;
 			}
 
-			// Validate the date string before creating a widget
-			const dateTest = new Date(rfc3339String);
+			// Pre-validate by trying to parse the date
+			let tempProcessedString = fullDateTimeStringInsideBackticks;
+			if (isDateOnly) {
+				tempProcessedString += 'T00:00:00Z';
+			}
+			const dateTest = new Date(tempProcessedString);
+
 			if (!isNaN(dateTest.getTime())) {
 				builder.add(
 					startPos,
 					endPos,
 					Decoration.replace({
-						widget: new RFC3339TimestampWidget(rfc3339String),
+						widget: new RFC3339Widget(fullDateTimeStringInsideBackticks, isDateOnly),
 					})
 				);
 			}
@@ -113,17 +131,15 @@ function buildRFC3339TimestampDecorations(view: EditorView): DecorationSet {
 	return builder.finish();
 }
 
-const rfc3339TimestampEditorPlugin = ViewPlugin.fromClass(
+const editorPlugin = ViewPlugin.fromClass(
 	class {
 		decorations: DecorationSet;
-
 		constructor(view: EditorView) {
-			this.decorations = buildRFC3339TimestampDecorations(view);
+			this.decorations = buildDecorations(view);
 		}
-
 		update(update: ViewUpdate) {
 			if (update.docChanged || update.viewportChanged || update.selectionSet) {
-				this.decorations = buildRFC3339TimestampDecorations(update.view);
+				this.decorations = buildDecorations(update.view);
 			}
 		}
 	},
@@ -133,16 +149,15 @@ const rfc3339TimestampEditorPlugin = ViewPlugin.fromClass(
 );
 
 
-export default class RFC3339RelativeTimePlugin extends Plugin {
-
+export default class RFC3339RelativeTimePlugin extends Plugin { // Name remains RFC3339 as it covers both
 	async onload() {
-		console.log('Loading RFC3339 Relative Time Plugin');
+		console.log('Loading RFC3339 Relative Time Plugin (supports date and date-time)');
 
 		this.registerMarkdownPostProcessor((element: HTMLElement, context: MarkdownPostProcessorContext) => {
 			this.processTimestampsInReadingView(element, context);
 		});
 
-		this.registerEditorExtension(rfc3339TimestampEditorPlugin);
+		this.registerEditorExtension(editorPlugin);
 	}
 
 	processTimestampsInReadingView(element: HTMLElement, context: MarkdownPostProcessorContext) {
@@ -152,33 +167,47 @@ export default class RFC3339RelativeTimePlugin extends Plugin {
 			const textContent = codeElement.textContent;
 			if (!textContent) return;
 
-			const match = textContent.match(readingViewRfc3339Regex);
+			const match = textContent.match(readingViewRegex);
 
 			if (match) {
-				const rfc3339String = match[1]; // Captured RFC 3339 string
-				const date = new Date(rfc3339String);
+				const datePart = match[1];
+				const timePart = match[2]; // Will be undefined if only date matched
 
-				if (!isNaN(date.getTime())) { // Check for valid date
-					// Apply styling class to the <code> element itself
+				const originalMatchedString = datePart + (timePart || '');
+				const isDateOnly = !timePart;
+
+				let processedDateString = originalMatchedString;
+				if (isDateOnly) {
+					processedDateString += 'T00:00:00Z'; // Normalize to UTC midnight
+				}
+
+				const date = new Date(processedDateString);
+
+				if (!isNaN(date.getTime())) {
 					codeElement.classList.add('rfc3339-relative-time-styled-codeblock');
 
 					const relativeTimeEl = document.createElement('relative-time');
 					relativeTimeEl.setAttribute('datetime', date.toISOString());
 
-					const titleFormat: Intl.DateTimeFormatOptions = {
-						weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-						hour: 'numeric', minute: 'numeric', timeZoneName: 'short',
-					};
-					try {
-						relativeTimeEl.setAttribute('title', date.toLocaleString(undefined, titleFormat));
-					} catch (e) {
-						relativeTimeEl.setAttribute('title', date.toString());
+					let titleString: string;
+					if (isDateOnly) {
+						const titleFormat: Intl.DateTimeFormatOptions = {
+							weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+							timeZone: 'UTC',
+						};
+						titleString = date.toLocaleDateString(undefined, titleFormat);
+					} else {
+						const titleFormat: Intl.DateTimeFormatOptions = {
+							weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+							hour: 'numeric', minute: 'numeric', timeZoneName: 'short',
+						};
+						titleString = date.toLocaleString(undefined, titleFormat);
 					}
+					relativeTimeEl.setAttribute('title', titleString);
 
-					codeElement.innerHTML = ''; // Clear existing text node
+					codeElement.innerHTML = '';
 					codeElement.appendChild(relativeTimeEl);
 				}
-				// If date is invalid, the <code> element remains unchanged, showing the raw RFC string
 			}
 		});
 	}
