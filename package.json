@@ -1,6 +1,6 @@
 {
 	"name": "rfc3339-relative-time",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Converts RFC3339 'full-date' and 'date-time' strings into relative timestamps.",
 	"main": "main.js",
 	"scripts": {
