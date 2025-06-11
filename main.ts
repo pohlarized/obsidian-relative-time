@@ -1,5 +1,4 @@
 import { Plugin, MarkdownPostProcessorContext } from 'obsidian';
-import { RangeSetBuilder } from '@codemirror/state';
 import {
 	Decoration,
 	DecorationSet,
@@ -8,35 +7,30 @@ import {
 	ViewUpdate,
 	WidgetType,
 } from '@codemirror/view'
-import '@github/relative-time-element'; // Import to register the custom element
+import { RangeSetBuilder, EditorSelection } from '@codemirror/state'; // Added EditorSelection for typing clarity
+import '@github/relative-time-element';
 
 // Regex for MarkdownPostProcessor (checks if an entire <code> block is a timestamp)
-// Group 1: The numeric timestamp
 const readingViewTimestampRegex = /^<t:(\d+)(?::[tTdDfFR])?>$/;
 
 // Regex for CodeMirror 6 ViewPlugin (targets the *entire* inline code block `timestamp`)
-// Group 1: The full <t:...> part (e.g., <t:12345:R>)
-// Group 2: The numeric UNIX timestamp (e.g., 12345)
 const editorTimestampRegex = /`(<t:(\d+)(?::[tTdDfFR])?>)`/g;
 
 
 // --- CodeMirror 6 Widget ---
 class TimestampWidget extends WidgetType {
 	constructor(readonly _fullTimestampString: string, readonly unixTimestamp: number) {
-		// _fullTimestampString is the <t:123:R> part, not used in toDOM but good for eq or debugging
 		super();
 	}
 
 	toDOM(view: EditorView): HTMLElement {
 		const span = document.createElement('span');
-		// This class helps to target the widget specifically in CSS if needed
-		// and distinguishes it from the raw <relative-time> if it were used directly.
 		span.classList.add('discord-relative-time-widget-wrapper');
 
 		const relativeTimeEl = document.createElement('relative-time');
 		const date = new Date(this.unixTimestamp * 1000);
 		relativeTimeEl.setAttribute('datetime', date.toISOString());
-		relativeTimeEl.classList.add('discord-relative-time'); // Common class for styling
+		relativeTimeEl.classList.add('discord-relative-time');
 
 		const titleFormat: Intl.DateTimeFormatOptions = {
 			weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -45,7 +39,6 @@ class TimestampWidget extends WidgetType {
 		try {
 			relativeTimeEl.setAttribute('title', date.toLocaleString(undefined, titleFormat));
 		} catch (e) {
-			// Fallback for environments where toLocaleString with options might fail
 			relativeTimeEl.setAttribute('title', date.toString());
 		}
 
@@ -53,23 +46,19 @@ class TimestampWidget extends WidgetType {
 		return span;
 	}
 
-	// eq(other: TimestampWidget): boolean {
-	//   return other.unixTimestamp === this.unixTimestamp && other._fullTimestampString === this._fullTimestampString;
-	// }
-
-	// ignoreEvent(): boolean { // Make the widget non-interactive with mouse/keyboard
-	//   return true;
-	// }
+	// No need for eq or ignoreEvent for this specific behavior,
+	// as we are re-evaluating whether to render the widget at all.
 }
 
 // --- CodeMirror 6 ViewPlugin Logic ---
 function buildTimestampDecorations(view: EditorView): DecorationSet {
 	const builder = new RangeSetBuilder<Decoration>();
+	const selection: EditorSelection = view.state.selection; // Get the current editor selection
 
 	for (const { from, to } of view.visibleRanges) {
 		const text = view.state.doc.sliceString(from, to);
 		let match;
-		editorTimestampRegex.lastIndex = 0; // Reset global regex state
+		editorTimestampRegex.lastIndex = 0;
 
 		while ((match = editorTimestampRegex.exec(text)) !== null) {
 			const matchStartInSlice = match.index;
@@ -77,8 +66,25 @@ function buildTimestampDecorations(view: EditorView): DecorationSet {
 			const innerTimestampTag = match[1]; // The `<t:...>` part
 			const unixTimestampStr = match[2];  // The numeric timestamp
 
-			const startPos = from + matchStartInSlice;
-			const endPos = startPos + fullMatchedText.length;
+			const startPos = from + matchStartInSlice; // Start of ``<t:...>``
+			const endPos = startPos + fullMatchedText.length; // End of ``<t:...>``
+
+			let cursorIsInside = false;
+			// Check each selection range (usually just one, the main cursor)
+			for (const selRange of selection.ranges) {
+				// A cursor is "inside" if its position (selRange.from or selRange.to, which are same for a cursor)
+				// is within or at the boundaries of the matched text.
+				// A selection block is "inside" if it overlaps with the matched text.
+				if (selRange.from <= endPos && selRange.to >= startPos) {
+					cursorIsInside = true;
+					break; // Found an overlapping selection, no need to check others
+				}
+			}
+
+			// If cursor is inside the markdown, don't render the widget; show raw text
+			if (cursorIsInside) {
+				continue; // Skip adding a decoration for this match
+			}
 
 			const unixTimestamp = parseInt(unixTimestampStr, 10);
 			if (!isNaN(unixTimestamp)) {
@@ -105,7 +111,6 @@ const timestampEditorPlugin = ViewPlugin.fromClass(
 
 		update(update: ViewUpdate) {
 			// Recompute decorations if document, viewport, or selection changes
-			// More specific checks (e.g. only update.docChanged) can be used for performance if needed
 			if (update.docChanged || update.viewportChanged || update.selectionSet) {
 				this.decorations = buildTimestampDecorations(update.view);
 			}
@@ -120,40 +125,29 @@ const timestampEditorPlugin = ViewPlugin.fromClass(
 export default class DiscordRelativeTimePlugin extends Plugin {
 
 	async onload() {
-		console.log('Loading Discord Relative Time Plugin (Editor + Reading View)');
+		console.log('Loading Discord Relative Time Plugin (v1.2 - Editor Cursor Aware)');
 
-		// For Reading View: Process <code> elements
 		this.registerMarkdownPostProcessor((element: HTMLElement, context: MarkdownPostProcessorContext) => {
 			this.processTimestampsInReadingView(element, context);
 		});
 
-		// For Editing View (Source Mode and Live Preview)
 		this.registerEditorExtension(timestampEditorPlugin);
 	}
 
 	processTimestampsInReadingView(element: HTMLElement, context: MarkdownPostProcessorContext) {
 		const codeElements = element.querySelectorAll('code');
-
 		codeElements.forEach(codeElement => {
-			const textContent = codeElement.textContent; // Get the raw text content of the <code> tag
+			const textContent = codeElement.textContent;
 			if (!textContent) return;
-
-			// Check if the *entire* content of the <code> tag matches our timestamp pattern
 			const match = textContent.match(readingViewTimestampRegex);
-
 			if (match) {
-				// match[0] is the full matched string e.g. <t:1678886400:R>
-				// match[1] is the captured UNIX timestamp string
 				const timestampSecondsStr = match[1];
 				const unixTimestampSeconds = parseInt(timestampSecondsStr, 10);
-
 				if (!isNaN(unixTimestampSeconds)) {
-					const date = new Date(unixTimestampSeconds * 1000); // Convert to milliseconds
-
+					const date = new Date(unixTimestampSeconds * 1000);
 					const relativeTimeEl = document.createElement('relative-time');
 					relativeTimeEl.setAttribute('datetime', date.toISOString());
-					relativeTimeEl.classList.add('discord-relative-time'); // For styling
-
+					relativeTimeEl.classList.add('discord-relative-time');
 					const titleFormat: Intl.DateTimeFormatOptions = {
 						weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
 						hour: 'numeric', minute: 'numeric',
@@ -163,18 +157,14 @@ export default class DiscordRelativeTimePlugin extends Plugin {
 					} catch (e) {
 						relativeTimeEl.setAttribute('title', date.toString());
 					}
-
-					// Replace the content of the <code> element with the new <relative-time>
-					codeElement.innerHTML = ''; // Clear existing text node
+					codeElement.innerHTML = '';
 					codeElement.appendChild(relativeTimeEl);
 				}
 			}
-			// If no match, or timestamp is invalid, the <code> element remains unchanged.
 		});
 	}
 
 	onunload() {
 		console.log('Unloading Discord Relative Time Plugin');
-		// Editor extensions and post processors are automatically cleaned up by Obsidian
 	}
 }
