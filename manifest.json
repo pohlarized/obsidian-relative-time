@@ -1,11 +1,10 @@
 {
-	"id": "discord-relative-time",
-	"name": "Discord Relative Time Plugin",
-	"version": "0.1.0",
+	"id": "rfc3339-relative-time",
+	"name": "RFC3339 Relative Time",
+	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Converts discord relative time strings into actual good relative times.",
+	"description": "Converts RFC3339 'full-date' and 'date-time' strings into relative timestamps.",
 	"author": "pohlarized",
 	"authorUrl": "https://github.com/pohlarized",
-	"fundingUrl": "",
 	"isDesktopOnly": true
 }
